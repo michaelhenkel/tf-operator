@@ -1,0 +1,7 @@
+apiVersion: tf.tungstenfabric.io/v1alpha1
+kind: Tungstenfabric
+metadata:
+  name: example-tungstenfabric
+spec:
+  # Add fields here
+  size: 3
