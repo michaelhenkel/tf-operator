@@ -174,65 +174,28 @@ func (r *ReconcileTungstenfabric) Reconcile(request reconcile.Request) (reconcil
 		}
 	}
 	if int32(len(podIpList)) == size && initContainerRunning {
-		config, err := rest.InClusterConfig()
-		if err != nil {
-			panic(err.Error())
-		}
-		clientset, err := kubernetes.NewForConfig(config)
-		if err != nil {
-			panic(err.Error())
-		}
-		kubeadmConfigMapClient := clientset.CoreV1().ConfigMaps("kube-system")
-		kcm, err := kubeadmConfigMapClient.Get("kubeadm-config", metav1.GetOptions{})
-		clusterConfig := kcm.Data["MasterConfiguration"]
-		clusterConfigByte := []byte(clusterConfig)
-		clusterConfigMap := make(map[interface{}]interface{})
-		err = yaml.Unmarshal(clusterConfigByte, &clusterConfigMap)
-		if err != nil {
-			panic(err)
-		}
-		/*
-		clusterConfigApi := clusterConfigMap["api"].(map[interface{}]interface{})
-		advertiseAddress := clusterConfigApi["advertiseAddress"].(string)
-		bindPort := clusterConfigApi["bindPort"].(int)
-		*/
-		networkConfig := clusterConfigMap["networking"].(map[interface{}]interface{})
-		podSubnet := networkConfig["podSubnet"].(string)
-		serviceSubnet := networkConfig["serviceSubnet"].(string)
-		nodeListString := strings.Join(podIpList,",")
-		configMap := &corev1.ConfigMap{
-			ObjectMeta: metav1.ObjectMeta{
-				Name: "contrailcontrollernodesv1",
-				Namespace: instance.Namespace,
-			},
-			Data: map[string]string{
-				"CONTROLLER_NODES": nodeListString,
-				"KUBERNETES_API_SERVER": os.Getenv("KUBERNETES_SERVICE_HOST"),
-				"KUBERNETES_API_SECURE_PORT": os.Getenv("KUBERNETES_SERVICE_PORT"),
-				"KUBERNETES_POD_SUBNETS": podSubnet,
-				"KUBERNETES_SERVICE_SUBNETS": serviceSubnet,
-				/*
-				"KUBERNETES_CLUSTER_NAME": clusterName,
-				*/
-			},
-		}
-		err = r.client.Get(context.TODO(), types.NamespacedName{Name: "contrailcontrollernodesv1", Namespace: instance.Namespace}, configMap)
-		if err == nil {
-			err = r.client.Delete(context.TODO(), configMap)
-			if err == nil {
-				reqLogger.Error(err, "Failed to delete ConfigMap.")
+		foundConfigmap := &corev1.ConfigMap{}
+		err = r.client.Get(context.TODO(), types.NamespacedName{Name: "contrailcontrollernodesv1", Namespace: foundConfigmap.Namespace}, foundConfigmap)
+		if err != nil && errors.IsNotFound(err) {
+			// Define a new configmap
+			cm := r.configmapForTungstenfabric(instance, podIpList)
+			reqLogger.Info("Creating a new Configmap.", "Configmap.Namespace", cm.Namespace, "Configmap.Name", cm.Name)
+			err = r.client.Create(context.TODO(), cm)
+			if err != nil {
+				reqLogger.Error(err, "Failed to create new Configmap.", "Configmap.Namespace", cm.Namespace, "Configmap.Name", cm.Name)
+				return reconcile.Result{}, err
 			}
-		}
-
-		err = r.client.Create(context.TODO(), configMap)
-		if err != nil {
-			reqLogger.Error(err, "Failed to create ConfigMap.")
+			// ConfigMap created successfully - return and requeue
+		} else if err != nil {
+			reqLogger.Error(err, "Failed to get ConfigMap.")
+			return reconcile.Result{}, err
 		}
 		for _, pod := range(podList.Items){
 			foundPod := &corev1.Pod{}
 			err = r.client.Get(context.TODO(), types.NamespacedName{Name: pod.Name, Namespace: pod.Namespace}, foundPod)
 			if err != nil {
 				reqLogger.Error(err, "Failed to update Pod label.")
+				return reconcile.Result{}, err
 			}
 			podMetaData := pod.ObjectMeta
 			podLabels := podMetaData.Labels
@@ -286,6 +249,53 @@ func newPodForCR(cr *tfv1alpha1.Tungstenfabric) *corev1.Pod {
 	}
 }
 
+func (r *ReconcileTungstenfabric) configmapForTungstenfabric(m *tfv1alpha1.Tungstenfabric, podIpList []string) *corev1.ConfigMap {
+	config, err := rest.InClusterConfig()
+	if err != nil {
+		panic(err.Error())
+	}
+	clientset, err := kubernetes.NewForConfig(config)
+	if err != nil {
+		panic(err.Error())
+	}
+	kubeadmConfigMapClient := clientset.CoreV1().ConfigMaps("kube-system")
+	kcm, err := kubeadmConfigMapClient.Get("kubeadm-config", metav1.GetOptions{})
+	clusterConfig := kcm.Data["MasterConfiguration"]
+	clusterConfigByte := []byte(clusterConfig)
+	clusterConfigMap := make(map[interface{}]interface{})
+	err = yaml.Unmarshal(clusterConfigByte, &clusterConfigMap)
+	if err != nil {
+		panic(err)
+	}
+	/*
+	clusterConfigApi := clusterConfigMap["api"].(map[interface{}]interface{})
+	advertiseAddress := clusterConfigApi["advertiseAddress"].(string)
+	bindPort := clusterConfigApi["bindPort"].(int)
+	*/
+	networkConfig := clusterConfigMap["networking"].(map[interface{}]interface{})
+	podSubnet := networkConfig["podSubnet"].(string)
+	serviceSubnet := networkConfig["serviceSubnet"].(string)
+	nodeListString := strings.Join(podIpList,",")
+
+	configMap := &corev1.ConfigMap{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: "contrailcontrollernodesv1",
+			Namespace: m.Namespace,
+		},
+		Data: map[string]string{
+			"CONTROLLER_NODES": nodeListString,
+			"KUBERNETES_API_SERVER": os.Getenv("KUBERNETES_SERVICE_HOST"),
+			"KUBERNETES_API_SECURE_PORT": os.Getenv("KUBERNETES_SERVICE_PORT"),
+			"KUBERNETES_POD_SUBNETS": podSubnet,
+			"KUBERNETES_SERVICE_SUBNETS": serviceSubnet,
+			/*
+			"KUBERNETES_CLUSTER_NAME": clusterName,
+			*/
+		},
+	}
+        controllerutil.SetControllerReference(m, configMap, r.scheme)
+        return configMap
+}
 // deploymentForTungstenfabric returns a tungstenfabric Deployment object
 func (r *ReconcileTungstenfabric) deploymentForTungstenfabric(m *tfv1alpha1.Tungstenfabric) *appsv1.Deployment {
         ls := labelsForTungstenfabric(m.Name)
