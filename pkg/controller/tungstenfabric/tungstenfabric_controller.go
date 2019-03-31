@@ -5,11 +5,15 @@ import (
 	"reflect"
 	"time"
 	"strings"
+	"os"
 
 	tfv1alpha1 "github.com/michaelhenkel/tf-operator/pkg/apis/tf/v1alpha1"
 
+	"gopkg.in/yaml.v2"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
+	"k8s.io/client-go/kubernetes"
+	"k8s.io/client-go/rest"
 	"k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/labels"
@@ -170,7 +174,31 @@ func (r *ReconcileTungstenfabric) Reconcile(request reconcile.Request) (reconcil
 		}
 	}
 	if int32(len(podIpList)) == size && initContainerRunning {
-		//reqLogger.Info("all ips known","ips",podIpList)
+		config, err := rest.InClusterConfig()
+		if err != nil {
+			panic(err.Error())
+		}
+		clientset, err := kubernetes.NewForConfig(config)
+		if err != nil {
+			panic(err.Error())
+		}
+		kubeadmConfigMapClient := clientset.CoreV1().ConfigMaps("kube-system")
+		kcm, err := kubeadmConfigMapClient.Get("kubeadm-config", metav1.GetOptions{})
+		clusterConfig := kcm.Data["MasterConfiguration"]
+		clusterConfigByte := []byte(clusterConfig)
+		clusterConfigMap := make(map[interface{}]interface{})
+		err = yaml.Unmarshal(clusterConfigByte, &clusterConfigMap)
+		if err != nil {
+			panic(err)
+		}
+		/*
+		clusterConfigApi := clusterConfigMap["api"].(map[interface{}]interface{})
+		advertiseAddress := clusterConfigApi["advertiseAddress"].(string)
+		bindPort := clusterConfigApi["bindPort"].(int)
+		*/
+		networkConfig := clusterConfigMap["networking"].(map[interface{}]interface{})
+		podSubnet := networkConfig["podSubnet"].(string)
+		serviceSubnet := networkConfig["serviceSubnet"].(string)
 		nodeListString := strings.Join(podIpList,",")
 		configMap := &corev1.ConfigMap{
 			ObjectMeta: metav1.ObjectMeta{
@@ -179,8 +207,23 @@ func (r *ReconcileTungstenfabric) Reconcile(request reconcile.Request) (reconcil
 			},
 			Data: map[string]string{
 				"CONTROLLER_NODES": nodeListString,
+				"KUBERNETES_API_SERVER": os.Getenv("KUBERNETES_SERVICE_HOST"),
+				"KUBERNETES_API_SECURE_PORT": os.Getenv("KUBERNETES_SERVICE_PORT"),
+				"KUBERNETES_POD_SUBNETS": podSubnet,
+				"KUBERNETES_SERVICE_SUBNETS": serviceSubnet,
+				/*
+				"KUBERNETES_CLUSTER_NAME": clusterName,
+				*/
 			},
 		}
+		err = r.client.Get(context.TODO(), types.NamespacedName{Name: "contrailcontrollernodesv1", Namespace: instance.Namespace}, configMap)
+		if err == nil {
+			err = r.client.Delete(context.TODO(), configMap)
+			if err == nil {
+				reqLogger.Error(err, "Failed to delete ConfigMap.")
+			}
+		}
+
 		err = r.client.Create(context.TODO(), configMap)
 		if err != nil {
 			reqLogger.Error(err, "Failed to create ConfigMap.")
