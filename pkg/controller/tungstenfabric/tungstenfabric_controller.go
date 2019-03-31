@@ -3,7 +3,7 @@ package tungstenfabric
 import (
 	"context"
 	"reflect"
-	"time"
+	//"time"
 	"strings"
 	"os"
 
@@ -30,11 +30,6 @@ import (
 )
 
 var log = logf.Log.WithName("controller_tungstenfabric")
-
-/**
-* USER ACTION REQUIRED: This is a scaffold file intended for the user to modify with their own Controller
-* business logic.  Delete these comments after modifying this file.*
- */
 
 // Add creates a new Tungstenfabric Controller and adds it to the Manager. The Manager will set fields on the Controller
 // and Start it when the Manager is Started.
@@ -86,9 +81,6 @@ type ReconcileTungstenfabric struct {
 
 // Reconcile reads that state of the cluster for a Tungstenfabric object and makes changes based on the state read
 // and what is in the Tungstenfabric.Spec
-// TODO(user): Modify this Reconcile function to implement your Controller logic.  This example creates
-// a Pod as an example
-// Note:
 // The Controller will requeue the Request to be processed again if the returned error is non-nil or
 // Result.Requeue is true, otherwise upon completion it will remove the work from the queue.
 func (r *ReconcileTungstenfabric) Reconcile(request reconcile.Request) (reconcile.Result, error) {
@@ -141,13 +133,8 @@ func (r *ReconcileTungstenfabric) Reconcile(request reconcile.Request) (reconcil
 	// Update the Tungstenfabric status with the pod names
         // List the pods for this tungstenfabric's deployment
         podList := &corev1.PodList{}
-	//podStatus := &corev1.PodStatus{}
         labelSelector := labels.SelectorFromSet(labelsForTungstenfabric(instance.Name))
-	/*
-	for _, label := range(labelsForTungstenfabric(instance.Name)){
-		reqLogger.Info("Label Selector", label)
-	}
-	*/
+
         listOps := &client.ListOptions{
                 Namespace:     instance.Namespace,
                 LabelSelector: labelSelector,
@@ -159,6 +146,17 @@ func (r *ReconcileTungstenfabric) Reconcile(request reconcile.Request) (reconcil
         }
 
 	podNames := getPodNames(podList.Items)
+	// Update status.Nodes if needed
+        if !reflect.DeepEqual(podNames, instance.Status.Nodes) {
+                instance.Status.Nodes = podNames
+		err = r.client.Update(context.TODO(), instance)
+                if err != nil {
+                        reqLogger.Error(err, "Failed to update Tungstenfabric status.")
+                        return reconcile.Result{}, err
+                }
+        }
+
+	// Get state for init PODs
 	initContainerRunning := true
 	var podIpList []string
 	var podNodeNameList []string
@@ -185,7 +183,6 @@ func (r *ReconcileTungstenfabric) Reconcile(request reconcile.Request) (reconcil
 				reqLogger.Error(err, "Failed to create new Configmap.", "Configmap.Namespace", cm.Namespace, "Configmap.Name", cm.Name)
 				return reconcile.Result{}, err
 			}
-			// ConfigMap created successfully - return and requeue
 		} else if err != nil {
 			reqLogger.Error(err, "Failed to get ConfigMap.")
 			return reconcile.Result{}, err
@@ -206,24 +203,11 @@ func (r *ReconcileTungstenfabric) Reconcile(request reconcile.Request) (reconcil
 				reqLogger.Error(err, "Failed to update Pod label.")
 				return reconcile.Result{}, err
 			}
-			reqLogger.Info("pod labels","labels",podLabels)
 		}
-		reqLogger.Info("container state flag","flag",initContainerRunning)
+	} else {
+                return reconcile.Result{Requeue: true}, nil
 	}
-	// Update status.Nodes if needed
-        if !reflect.DeepEqual(podNames, instance.Status.Nodes) {
-                instance.Status.Nodes = podNames
-                //err := r.client.Status().Update(context.TODO(), instance)
-		err = r.client.Update(context.TODO(), instance)
-                if err != nil {
-                        reqLogger.Error(err, "Failed to update Tungstenfabric status.")
-                        return reconcile.Result{}, err
-                }
-        }
-
-
-	//return reconcile.Result{}, nil
-	return reconcile.Result{RequeueAfter: time.Second*5}, nil
+	return reconcile.Result{}, nil
 }
 
 // newPodForCR returns a busybox pod with the same name/namespace as the cr
@@ -267,11 +251,6 @@ func (r *ReconcileTungstenfabric) configmapForTungstenfabric(m *tfv1alpha1.Tungs
 	if err != nil {
 		panic(err)
 	}
-	/*
-	clusterConfigApi := clusterConfigMap["api"].(map[interface{}]interface{})
-	advertiseAddress := clusterConfigApi["advertiseAddress"].(string)
-	bindPort := clusterConfigApi["bindPort"].(int)
-	*/
 	networkConfig := clusterConfigMap["networking"].(map[interface{}]interface{})
 	podSubnet := networkConfig["podSubnet"].(string)
 	serviceSubnet := networkConfig["serviceSubnet"].(string)
